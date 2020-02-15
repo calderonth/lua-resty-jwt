@@ -60,6 +60,8 @@ local str_const = {
   HS512 = "HS512",
   RS256 = "RS256",
   RS512 = "RS512",
+  ES256 = "ES256",
+  ES512 = "ES512",
   A128CBC_HS256 = "A128CBC-HS256",
   A256CBC_HS512 = "A256CBC-HS512",
   RSA_OAEP_256 = "RSA-OAEP-256",
@@ -537,8 +539,8 @@ function _M.sign(self, secret_key, jwt_obj)
   elseif alg == str_const.HS512 then
     local secret_str = get_secret_str(secret_key, jwt_obj)
     signature = hmac:new(secret_str, hmac.ALGOS.SHA512):final(message)
-  elseif alg == str_const.RS256 then
-    local signer, err = evp.RSASigner:new(secret_key)
+  elseif alg == str_const.RS256 or alg == str_const.ES256 then
+    local signer, err = evp.Signer:new(alg, secret_key)
     if not signer then
       error({reason="signer error: " .. err})
     end
@@ -796,7 +798,7 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
       -- signature check
       jwt_obj[str_const.reason] = "signature mismatch: " .. jwt_obj[str_const.signature]
     end
-  elseif alg == str_const.RS256 or alg == str_const.RS512 then
+  elseif alg == str_const.RS256 or alg == str_const.RS512 or alg == str_const.ES256 then
     local cert, err
     if self.trusted_certs_file ~= nil then
       local cert_str = extract_certificate(jwt_obj, self.x5u_content_retriever)
@@ -850,7 +852,7 @@ function _M.verify_jwt_obj(self, secret, jwt_obj, ...)
     local verified = false
     err = "verify error: reason unknown"
 
-    if alg == str_const.RS256 then
+    if alg == str_const.RS256 or alg == str_const.ES256 then
       verified, err = verifier:verify(message, sig, evp.CONST.SHA256_DIGEST)
     elseif alg == str_const.RS512 then
       verified, err = verifier:verify(message, sig, evp.CONST.SHA512_DIGEST)

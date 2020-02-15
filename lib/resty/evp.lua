@@ -25,6 +25,7 @@ local CONST = {
     -- ref : https://github.com/openssl/openssl/blob/master/include/openssl/evp.h
     NID_rsaEncryption = 6,
     EVP_PKEY_RSA = 6,
+    EVP_PKEY_EC = 408,
     EVP_PKEY_ALG_CTRL = 0x1000,
     EVP_PKEY_CTRL_RSA_PADDING = 0x1000 + 1,
 
@@ -59,11 +60,20 @@ RSA * PEM_read_bio_RSAPrivateKey(BIO *bp, RSA **rsa, pem_password_cb *cb,
 RSA * PEM_read_bio_RSAPublicKey(BIO *bp, RSA **rsa, pem_password_cb *cb,
                                 void *u);
 
+// EC_KEY
+typedef struct ec_key_st EC_KEY;
+void EC_KEY_free(EC_KEY *key);
+EC_KEY * PEM_read_bio_ECPrivateKey(BIO *bp, EC_KEY **key, pem_password_cb *cb,
+								void *u);
+EC_KEY * PEM_read_bio_ECPublicKey(BIO *bp, EC_KEY **key, pem_password_cb *cb,
+                                void *u);
+
 // EVP PKEY
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct engine_st ENGINE;
 EVP_PKEY *EVP_PKEY_new(void);
 int EVP_PKEY_set1_RSA(EVP_PKEY *pkey,RSA *key);
+int EVP_PKEY_set1_EC_KEY(EVP_PKEY *pkey,EC_KEY *key);
 EVP_PKEY *EVP_PKEY_new_mac_key(int type, ENGINE *e,
                                const unsigned char *key, int keylen);
 void EVP_PKEY_free(EVP_PKEY *key);
@@ -198,7 +208,7 @@ else
     end
 end
 
-local function _new_rsa(self, opts)
+local function _new_key(self, opts, algorithm)
     local bio = _C.BIO_new(_C.BIO_s_mem())
     ffi_gc(bio, _C.BIO_vfree)
     if _C.BIO_puts(bio, opts.pem_private_key) < 0 then
@@ -212,10 +222,19 @@ local function _new_rsa(self, opts)
         ffi_copy(pass, opts.password, plen)
     end
 
-    local rsa = _C.PEM_read_bio_RSAPrivateKey(bio, nil, nil, pass)
-    ffi_gc(rsa, _C.RSA_free)
+    local key = nil
+    if algorithm == "RS256" then
+        key = _C.PEM_read_bio_RSAPrivateKey(bio, nil, nil, pass)
+        ffi_gc(key, _C.RSA_free)
+    elseif algorithm == "ES256" then
+        key = _C.PEM_read_bio_ECPrivateKey(bio, nil, nil, pass)
+        ffi_gc(key, _C.EC_KEY_free)
+    else
+        -- Unsupported algo
+        return nil, "Unsupported algorithm parameter received"
+    end
 
-    if not rsa then
+    if not key then
         return _err()
     end
 
@@ -225,8 +244,14 @@ local function _new_rsa(self, opts)
     end
 
     ffi_gc(evp_pkey, _C.EVP_PKEY_free)
-    if _C.EVP_PKEY_set1_RSA(evp_pkey, rsa) ~= 1 then
-        return _err()
+    if algorithm == "RS256" then
+        if _C.EVP_PKEY_set1_RSA(evp_pkey, key) ~= 1 then
+            return _err()
+        end
+    elseif algorithm == "ES256" then
+        if _C.EVP_PKEY_set1_EC_KEY(evp_pkey, key) ~= 1 then
+            return _err()
+        end
     end
 
     self.evp_pkey = evp_pkey
@@ -275,20 +300,22 @@ local function _create_evp_ctx(self, encrypt)
     return self.ctx
 end
 
-local RSASigner = {}
-_M.RSASigner = RSASigner
+local Signer = {}
+_M.Signer = Signer
 
 --- Create a new RSASigner
+-- @param algo RS256 or ES256
 -- @param pem_private_key A private key string in PEM format
 -- @param password password for the private key (if required)
 -- @returns RSASigner, err_string
-function RSASigner.new(self, pem_private_key, password)
-    return _new_rsa (
+function Signer.new(self, algo, pem_private_key, password)
+    return _new_key (
         self,
         {
             pem_private_key = pem_private_key,
             password = password
-        }
+        },
+        algo
     )
 end
 
@@ -297,7 +324,7 @@ end
 -- @param message The message to sign
 -- @param digest_name The digest format to use (e.g., "SHA256")
 -- @returns signature, error_string
-function RSASigner.sign(self, message, digest_name)
+function Signer.sign(self, message, digest_name)
     local buf = ffi_new("unsigned char[?]", 1024)
     local len = ffi_new("size_t[1]", 1024)
 
@@ -596,12 +623,13 @@ _M.RSADecryptor = RSADecryptor
 function RSADecryptor.new(self, pem_private_key, password, padding, digest_alg)
     self.padding = padding or CONST.RSA_PKCS1_OAEP_PADDING
     self.digest_alg = digest_alg or CONST.SHA256_DIGEST
-    return _new_rsa (
+    return _new_key (
         self,
         {
             pem_private_key = pem_private_key,
             password = password
-        }
+        },
+        "RS256"
     )
 end
 
